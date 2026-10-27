@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "krok-ide"
+dynamic = ["version"]
+description = "Zjednodušené vývojové prostredie pre Python s vizualizáciou výpočtu"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "PySide6-Essentials~=6.8.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-qt>=4.4",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.gui-scripts]
+krok = "krok.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "krok.__version__" }
+
+[tool.setuptools.package-data]
+"krok.translations" = ["*.qm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--import-mode=importlib"]
+xfail_strict = true
+qt_api = "pyside6"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests", "tools"]
+mypy_path = "src"
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+# QtBot z pytest-qt nemá typové anotácie (keyClick a pod.).
+module = ["tests.*"]
+disallow_untyped_calls = false
