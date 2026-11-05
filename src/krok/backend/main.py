@@ -3,6 +3,7 @@
 import io
 import queue
 import sys
+import threading
 from typing import Any
 
 from krok.backend.channel import Channel, ImmediateReader, InputStream, MessageStream
@@ -14,11 +15,21 @@ def main() -> int:
     assert isinstance(stdout, io.TextIOWrapper)
     # Na Windows sa "\n" na výstupe prekladá na "\r\n"; frontend chce text bez prekladu.
     stdout.reconfigure(newline="\n")
-    channel = Channel(stdout)
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
-    inputs: queue.Queue[str] = queue.Queue()
-    ImmediateReader(sys.stdin.fileno(), commands, inputs).start()
+    inputs: queue.Queue[str | None] = queue.Queue()
+    stop = threading.Event()
+    ImmediateReader(sys.stdin.fileno(), commands, inputs, stop).start()
     sys.stdin = InputStream(inputs)
-    sys.stderr = MessageStream(channel, "stderr")
     command = commands.get()
+    channel = Channel(stdout, command["token"])
+    sys.stderr = MessageStream(channel, "stderr")
+    if command["cmd"] == "visualize":
+        # Až tu: bežné spustenie nemá čakať na import psutil a bdb (stovky ms).
+        from krok.backend.visualize import Visualization
+        from krok.common.trace import Limits
+
+        limits = Limits(**command["limits"])
+        return Visualization(
+            command["source"], command["path"], channel, inputs, stop, limits
+        ).run()
     return run_program(command["source"], command["path"])

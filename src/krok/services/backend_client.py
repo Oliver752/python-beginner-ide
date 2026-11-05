@@ -3,13 +3,15 @@
 import codecs
 import os
 import queue
+import secrets
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from krok.common.protocol import Item, MessageParser, encode_command
+from krok.common.trace import Limits
 
 # Plný front zastaví čítanie rúry, a tým aj backend. Program, ktorý vypisuje
 # donekonečna, tak nezahltí pamäť IDE, len beží tak rýchlo, ako stíha konzola.
@@ -43,12 +45,21 @@ class BackendClient:
         self._events: queue.Queue[Event] = queue.Queue(QUEUE_SIZE)
         self._stopped = threading.Event()
         self._process: subprocess.Popen[bytes] | None = None
+        self._token = secrets.token_hex(8)
 
     @property
     def running(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
     def start(self, source: str, path: str) -> None:
+        self._launch({"cmd": "run", "source": source, "path": path})
+
+    def visualize(self, source: str, path: str, limits: Limits | None = None) -> None:
+        """Spustí záznam; výsledok príde ako Message s udalosťou "trace"."""
+        limits = limits or Limits()
+        self._launch({"cmd": "visualize", "source": source, "path": path, "limits": asdict(limits)})
+
+    def _launch(self, command: dict[str, Any]) -> None:
         # -u: bez neho by rúra zadržiavala výstup a konzola by vyzerala mŕtvo.
         # -P: aktuálny priečinok nejde do sys.path, takže súbor používateľa
         #     nazvaný napríklad queue.py nezatieni modul, ktorý potrebuje backend.
@@ -66,10 +77,14 @@ class BackendClient:
         threading.Thread(
             target=self._read_output, args=(self._process, errors), daemon=True
         ).start()
-        self._send({"cmd": "run", "source": source, "path": path})
+        self._send({**command, "token": self._token})
 
     def send_input(self, text: str) -> None:
         self._send({"cmd": "input", "text": text})
+
+    def interrupt(self) -> None:
+        """Požiada záznam o zastavenie; backend ešte pošle čiastočnú stopu."""
+        self._send({"cmd": "stop"})
 
     def stop(self) -> None:
         """Ukončí backend. Udalosti, ktoré ešte neboli prevzaté, sa zahodia."""
@@ -117,7 +132,7 @@ class BackendClient:
     def _read_output(self, process: "subprocess.Popen[bytes]", errors: threading.Thread) -> None:
         assert process.stdout is not None
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        parser = MessageParser()
+        parser = MessageParser(self._token)
         while chunk := os.read(process.stdout.fileno(), CHUNK_SIZE):
             for item in parser.feed(decoder.decode(chunk)):
                 self._put(_to_event(item))

@@ -13,13 +13,14 @@ from krok.common.protocol import encode_message
 class Channel:
     """Posiela frontendu správy protokolu."""
 
-    def __init__(self, stream: TextIO) -> None:
+    def __init__(self, stream: TextIO, token: str) -> None:
         self._stream = stream
+        self._token = token
         self._lock = threading.Lock()
 
     def send(self, message: dict[str, Any]) -> None:
         with self._lock:
-            self._stream.write(encode_message(message))
+            self._stream.write(encode_message(message, self._token))
             self._stream.flush()
 
 
@@ -45,9 +46,12 @@ class MessageStream(io.TextIOBase):
 
 
 class InputStream(io.TextIOBase):
-    """Náhrada sys.stdin: riadky pre input() prichádzajú od ImmediateReader."""
+    """Náhrada sys.stdin: riadky pre input() prichádzajú od ImmediateReader.
 
-    def __init__(self, lines: "queue.Queue[str]") -> None:
+    None znamená zastavenie programu. Zostáva vo fronte, aby sa nezasekol ani ďalší input().
+    """
+
+    def __init__(self, lines: "queue.Queue[str | None]") -> None:
         super().__init__()
         self._lines = lines
 
@@ -55,7 +59,11 @@ class InputStream(io.TextIOBase):
         return True
 
     def readline(self, size: int = -1, /) -> str:  # type: ignore[override]  # ako v typeshed
-        return self._lines.get() + "\n"
+        line = self._lines.get()
+        if line is None:
+            self._lines.put(None)
+            raise KeyboardInterrupt
+        return line + "\n"
 
 
 class ImmediateReader(threading.Thread):
@@ -72,12 +80,14 @@ class ImmediateReader(threading.Thread):
         self,
         fd: int,
         commands: "queue.Queue[dict[str, Any]]",
-        inputs: "queue.Queue[str]",
+        inputs: "queue.Queue[str | None]",
+        stop: threading.Event,
     ) -> None:
         super().__init__(name="ImmediateReader", daemon=True)
         self._fd = fd
         self._commands = commands
         self._inputs = inputs
+        self._stop = stop
 
     def run(self) -> None:
         pending = b""
@@ -85,9 +95,13 @@ class ImmediateReader(threading.Thread):
             *lines, pending = (pending + chunk).split(b"\n")
             for line in lines:
                 command = json.loads(line)
-                if command["cmd"] == "input":
-                    self._inputs.put(command["text"])
-                else:
-                    self._commands.put(command)
+                match command["cmd"]:
+                    case "input":
+                        self._inputs.put(command["text"])
+                    case "stop":
+                        self._stop.set()
+                        self._inputs.put(None)
+                    case _:
+                        self._commands.put(command)
         # Rúra sa zavrela, frontend teda skončil alebo spadol. Program nemá komu bežať.
         os._exit(1)
